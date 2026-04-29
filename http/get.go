@@ -14,8 +14,21 @@ import (
 
 var http_cl = net_http.Client{}
 
+type GetWithCacheOptions struct {
+	URI              string
+	CheckLastModTime bool
+}
+
 func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.ReadSeekCloser, error) {
 
+	opts := &GetWithCacheOptions{
+		CheckLastModTime: true,
+	}
+
+	return GetWithCacheAndOptions(ctx, c, uri, opts)
+}
+
+func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri string, opts *GetWithCacheOptions) (io.ReadSeekCloser, error) {
 	logger := slog.Default()
 	logger = logger.With("uri", uri)
 
@@ -38,34 +51,38 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 		return getWithCache(ctx, c, uri, r)
 	}
 
-	cache_t := attrs.ModTime
+	if opts.CheckLastModTime {
 
-	req, err := net_http.NewRequestWithContext(ctx, net_http.MethodHead, uri, nil)
+		cache_t := attrs.ModTime
 
-	if err != nil {
-		logger.Debug("Failed to create request, fetch from source", "error", err)
-		return getWithCache(ctx, c, uri, r)
-	}
+		req, err := net_http.NewRequestWithContext(ctx, net_http.MethodHead, uri, nil)
 
-	rsp, err := http_cl.Do(req)
+		if err != nil {
+			logger.Debug("Failed to create request, fetch from source", "error", err)
+			return getWithCache(ctx, c, uri, r)
+		}
 
-	if err != nil {
-		logger.Debug("Failed to complete request, fetch from source", "error", err)
-		return getWithCache(ctx, c, uri, r)
-	}
+		rsp, err := http_cl.Do(req)
 
-	source_lastmod := rsp.Header.Get("Last-Modified")
+		if err != nil {
+			logger.Debug("Failed to complete request, fetch from source", "error", err)
+			return getWithCache(ctx, c, uri, r)
+		}
 
-	source_t, err := net_http.ParseTime(source_lastmod)
+		source_lastmod := rsp.Header.Get("Last-Modified")
 
-	if err != nil {
-		logger.Debug("Failed to parse last mod header", "last mod", source_lastmod, "error", err)
-		return getWithCache(ctx, c, uri, r)
-	}
+		source_t, err := net_http.ParseTime(source_lastmod)
 
-	if cache_t.Before(source_t) {
-		logger.Debug("Source has been modified, fecth from source", "cache", cache_t, "source", source_t)
-		return getWithCache(ctx, c, uri, r)
+		if err != nil {
+			logger.Debug("Failed to parse last mod header", "last mod", source_lastmod, "error", err)
+			return getWithCache(ctx, c, uri, r)
+		}
+
+		if cache_t.Before(source_t) {
+			logger.Debug("Source has been modified, fecth from source", "cache", cache_t, "source", source_t)
+			return getWithCache(ctx, c, uri, r)
+		}
+
 	}
 
 	logger.Debug("Return from cache")
