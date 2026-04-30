@@ -21,6 +21,8 @@ type GetWithCacheOptions struct {
 	// CheckLastModTime indicates whether the function should perform an HTTP HEAD
 	// request to determine if the cached copy is still up‑to‑date.
 	CheckLastModTime bool
+	// Client is the http.Client instance to use when fetching resources.
+	Client *net_http.Client
 }
 
 // GetWithCache attempts to fetch a resource identified by uri from the
@@ -30,6 +32,7 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 
 	opts := &GetWithCacheOptions{
 		CheckLastModTime: true,
+		Client:           &http_cl,
 	}
 
 	return GetWithCacheAndOptions(ctx, c, uri, opts)
@@ -51,14 +54,14 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 
 	if err != nil && err == blobcache.CacheMiss {
 		logger.Debug("Cache miss, fetch from source")
-		return getWithCache(ctx, c, uri, r)
+		return getWithCache(ctx, c, opts.Client, uri, r)
 	}
 
 	attrs, err := c.Attributes(ctx, uri)
 
 	if err != nil {
 		logger.Debug("Failed to determine attributes, fetch from source", "error", err)
-		return getWithCache(ctx, c, uri, r)
+		return getWithCache(ctx, c, opts.Client, uri, r)
 	}
 
 	if opts.CheckLastModTime {
@@ -69,14 +72,14 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 
 		if err != nil {
 			logger.Debug("Failed to create request, fetch from source", "error", err)
-			return getWithCache(ctx, c, uri, r)
+			return getWithCache(ctx, c, opts.Client, uri, r)
 		}
 
-		rsp, err := http_cl.Do(req)
+		rsp, err := opts.Client.Do(req)
 
 		if err != nil {
 			logger.Debug("Failed to complete request, fetch from source", "error", err)
-			return getWithCache(ctx, c, uri, r)
+			return getWithCache(ctx, c, opts.Client, uri, r)
 		}
 
 		source_lastmod := rsp.Header.Get("Last-Modified")
@@ -85,12 +88,12 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 
 		if err != nil {
 			logger.Debug("Failed to parse last mod header", "last mod", source_lastmod, "error", err)
-			return getWithCache(ctx, c, uri, r)
+			return getWithCache(ctx, c, opts.Client, uri, r)
 		}
 
 		if cache_t.Before(source_t) {
 			logger.Debug("Source has been modified, fecth from source", "cache", cache_t, "source", source_t)
-			return getWithCache(ctx, c, uri, r)
+			return getWithCache(ctx, c, opts.Client, uri, r)
 		}
 
 	}
@@ -99,9 +102,9 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 	return r, nil
 }
 
-func getWithCache(ctx context.Context, c *blobcache.BlobCache, uri string, r io.ReadSeekCloser) (io.ReadSeekCloser, error) {
+func getWithCache(ctx context.Context, c *blobcache.BlobCache, cl *net_http.Client, uri string, r io.ReadSeekCloser) (io.ReadSeekCloser, error) {
 
-	r2, err := fetchFromSource(ctx, c, uri)
+	r2, err := fetchFromSource(ctx, c, cl, uri)
 
 	if err != nil {
 		logger := slog.Default()
@@ -121,7 +124,7 @@ func getWithCache(ctx context.Context, c *blobcache.BlobCache, uri string, r io.
 // fetchFromSource downloads a resource from uri using an HTTP GET request,
 // stores the response body in the cache, and returns a ReadSeekCloser
 // for the downloaded data.
-func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, uri string) (io.ReadSeekCloser, error) {
+func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, cl *net_http.Client, uri string) (io.ReadSeekCloser, error) {
 
 	logger := slog.Default()
 	logger = logger.With("uri", uri)
@@ -132,7 +135,7 @@ func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, uri string) (i
 		return nil, fmt.Errorf("Failed to create new HTTP request, %w", err)
 	}
 
-	rsp, err := http_cl.Do(req)
+	rsp, err := cl.Do(req)
 
 	if err != nil {
 		return nil, fmt.Errorf("Failed to execute HTTP request, %w", err)
