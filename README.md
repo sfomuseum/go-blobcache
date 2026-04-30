@@ -2,6 +2,10 @@
 
 Minimalist and opionated Go package implementing a file-based cache using the [gocloud.dev/blob](https://pkg.go.dev/gocloud.dev/blob) package.
 
+## Documentation
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/sfomuseum/go-blobcache.svg)](https://pkg.go.dev/github.com/sfomuseum/go-blobcache)
+
 ## Example
 
 ```
@@ -19,26 +23,19 @@ func main() {
 
 	ctx := context.Background()
 
-	// Create a local file‑system cache in ./cache
-	//   - keep items < 1 GB total
-	//   - purge items older than 7 days
-	
-	cache, _ := blobcache.NewBlobCache(ctx, "file:///tmp/blobcache?max-size=1073741824")
+	cache, _ := blobcache.NewBlobCache(ctx, "file:///tmp/blobcache?max-size=1GB&max-age=PT30M")
 	defer cache.Close()
-
-	// Store an image
 
 	im_path := "/path/to/image.png"
 	im, _ := os.Open(im_path)
 	
 	_ cache.Set(ctx, im_path, im)
 
-	// Retrieve the same image
-	
 	r, _ := cache.Get(ctx, im_path)
-
-	// Remove item from cache
-
+	defer r.Close()
+	
+	// Do something with r here...
+	
 	cache.Unset(ctx, im_path)
 }
 ```
