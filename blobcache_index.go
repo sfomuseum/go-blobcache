@@ -2,9 +2,10 @@ package blobcache
 
 import (
 	"context"
+	"crypto/md5"
 	"database/sql"
+	_ "embed"
 	"fmt"
-	_ "github.com/mattn/go-sqlite3"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,8 +13,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	sfom_sql "github.com/sfomuseum/go-database/sql"
 )
+
+//go:embed blobcache_schema.txt
+var blobCacheTableSchema string
 
 // removeObjectsStopFunc is a callback that determines whether
 // pruning should stop after a particular object has been removed.
@@ -21,6 +27,13 @@ import (
 // and either its size or modification time depending on the pruning
 // strategy.  It should return true to stop pruning.
 type removeObjectsStopFunc func(context.Context, string, int64) bool
+
+// hashKey returns the MD5 digest of the supplied key as a hex string.
+func hashKey(key string) string {
+
+	data := []byte(key)
+	return fmt.Sprintf("%x", md5.Sum(data))
+}
 
 // setupBlobCacheIndex creates or opens the SQLite database that
 // stores the cache index.  If the supplied DSN is ":default:" the
@@ -76,7 +89,7 @@ func setupBlobCacheIndex(ctx context.Context, index_dsn string) (*sql.DB, error)
 
 	if !has_table {
 
-		_, err := index_db.ExecContext(ctx, "CREATE TABLE blobcache (key TEXT PRIMARY KEY, size INTEGER, modtime INTEGER)")
+		_, err := index_db.ExecContext(ctx, blobCacheTableSchema)
 
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create blobcache table, %w", err)
@@ -95,7 +108,9 @@ func (c *BlobCache) addToIndex(ctx context.Context, key string, size int64, modt
 		return nil
 	}
 
-	_, err := c.index_db.ExecContext(ctx, "INSERT OR REPLACE INTO blobcache (key, size, modtime) VALUES(?, ?, ?)", key, size, modtime)
+	q := "INSERT INTO blobcache (bucket, key, size, accessed, modtime) VALUES(?, ?, ?, ?, ?) ON CONFLICT(bucket, key) DO UPDATE SET accessed=accessed+1, size=?, modtime=?"
+
+	_, err := c.index_db.ExecContext(ctx, q, c.bucket_hash, key, size, 1, modtime, size, modtime)
 	return err
 }
 
@@ -107,7 +122,7 @@ func (c *BlobCache) removeFromIndex(ctx context.Context, key string) error {
 		return nil
 	}
 
-	_, err := c.index_db.ExecContext(ctx, "DELETE from blobcache WHERE key = ?", key)
+	_, err := c.index_db.ExecContext(ctx, "DELETE from blobcache WHERE bucket = ? AND key = ?", c.bucket_hash, key)
 	return err
 }
 
@@ -173,7 +188,7 @@ func (c *BlobCache) Index(ctx context.Context) error {
 
 	logger.Debug("Gather existing keys in index")
 
-	rows, err := c.index_db.QueryContext(ctx, "SELECT key FROM blobcache")
+	rows, err := c.index_db.QueryContext(ctx, "SELECT key FROM blobcache WHERE bucket = ?", c.bucket_hash)
 
 	if err != nil {
 		logger.Error("Failed to select keys from index", "error", err)
@@ -281,7 +296,7 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 
 	for {
 
-		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE modtime < ?", then)
+		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE bucket = ? AND modtime < ?", c.bucket_hash, then)
 
 		if err != nil {
 			logger.Error("Failed to remove objects older than", "age", then, "error", err)
@@ -298,7 +313,7 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 
 	var size int64
 
-	row := c.index_db.QueryRowContext(ctx, "SELECT IFNULL(SUM(size), 0) AS size FROM blobcache")
+	row := c.index_db.QueryRowContext(ctx, "SELECT IFNULL(SUM(size), 0) AS size FROM blobcache WHERE bucket = ?", c.bucket_hash)
 	err := row.Scan(&size)
 
 	if err != nil {
@@ -328,7 +343,7 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 			return false
 		}
 
-		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache ORDER BY modtime ASC LIMIT 100")
+		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE bucket = ? ORDER BY accessed ASC, modtime ASC LIMIT 100", c.bucket_hash)
 
 		if err != nil {
 			logger.Error("Failed to prune objects", "error", err)

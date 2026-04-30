@@ -2,7 +2,6 @@ package blobcache
 
 import (
 	"context"
-	"crypto/md5"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -37,15 +36,16 @@ const (
 // configuration limits.  The cache also keeps a SQLite database that
 // stores the size and last‑access time of each cached item.
 type BlobCache struct {
-	bucket   *blob.Bucket
-	ticker   *time.Ticker
-	done_ch  chan bool
-	max_age  int64
-	max_size int64
-	index_db *sql.DB
-	indexing *atomic.Bool
-	indexed  *atomic.Bool
-	pruning  *atomic.Bool
+	bucket      *blob.Bucket
+	bucket_hash string
+	ticker      *time.Ticker
+	done_ch     chan bool
+	max_age     int64
+	max_size    int64
+	index_db    *sql.DB
+	indexing    *atomic.Bool
+	indexed     *atomic.Bool
+	pruning     *atomic.Bool
 }
 
 // NewBlobCache creates a new BlobCache.  The URI passed in defines the
@@ -111,6 +111,7 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 
 	var b *blob.Bucket
 	var index_db *sql.DB
+	var bucket_hash string
 
 	switch u.Scheme {
 	case "null":
@@ -133,6 +134,8 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 			return nil, fmt.Errorf("Failed to open cache bucket, %w", err)
 		}
 
+		bucket_hash = hashKey(uri)
+
 		slog.Debug("Set up index database", "dsn", index_dsn)
 
 		index_db, err = setupBlobCacheIndex(ctx, index_dsn)
@@ -152,13 +155,14 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 	pruning.Store(false)
 
 	c := &BlobCache{
-		bucket:   b,
-		index_db: index_db,
-		max_age:  max_age,
-		max_size: max_size,
-		indexing: indexing,
-		indexed:  indexed,
-		pruning:  pruning,
+		bucket:      b,
+		bucket_hash: bucket_hash,
+		index_db:    index_db,
+		max_age:     max_age,
+		max_size:    max_size,
+		indexing:    indexing,
+		indexed:     indexed,
+		pruning:     pruning,
 	}
 
 	if b != nil {
@@ -358,7 +362,7 @@ func (c *BlobCache) derivePathFromKey(key string) string {
 // segments and joined with the OS path separator.
 func (c *BlobCache) deriveTreeFromKey(key string) string {
 
-	input := c.hashKey(key)
+	input := hashKey(key)
 	parts := []string{}
 
 	for len(input) > 6 {
@@ -374,11 +378,4 @@ func (c *BlobCache) deriveTreeFromKey(key string) string {
 
 	path := filepath.Join(parts...)
 	return path
-}
-
-// hashKey returns the MD5 digest of the supplied key as a hex string.
-func (c *BlobCache) hashKey(key string) string {
-
-	data := []byte(key)
-	return fmt.Sprintf("%x", md5.Sum(data))
 }

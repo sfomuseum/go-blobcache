@@ -16,10 +16,10 @@ func DefaultFlagSet() *flag.FlagSet {
 
 	fs := flagset.NewFlagSet("cache")
 
-	fs.StringVar(&cache_uri, "cache-uri", "mem://", "...")
-	fs.StringVar(&action, "action", "", "...")
-	fs.StringVar(&key, "key", "", "...")
-	fs.StringVar(&data, "data", "", "...")
+	fs.StringVar(&cache_uri, "cache-uri", "mem://", "A valid blobcache.BlobCache URI constructor.")
+	fs.StringVar(&action, "action", "", "Valid actions are: get, set, unset, index, prune.")
+	fs.StringVar(&key, "key", "", "The name of the key to access from the blobcache. This flag is ignored if -action is \"index\" or \"prune\".")
+	fs.StringVar(&data, "data", "", "The data to store in the blobcache. This flag is ignored unless -action is \"set\".")
 
 	fs.BoolVar(&verbose, "verbose", false, "Enable verbose (debug) logging.")
 	return fs

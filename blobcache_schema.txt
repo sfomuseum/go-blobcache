@@ -1,0 +1,5 @@
+CREATE TABLE blobcache (bucket TEXT, key TEXT, size INTEGER, accessed INTEGER, modtime INTEGER);
+
+CREATE UNIQUE INDEX  blobcache_by_bucket_key ON blobcache (`bucket`, `key`);
+CREATE INDEX blobcache_by_bucket_modtime ON blobcache (`bucket`, `modtime`);
+CREATE INDEX blobcache_by_bucket_accessed ON blobcache (`bucket`, `accessed`, `modtime`);
