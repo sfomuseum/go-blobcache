@@ -23,6 +23,10 @@ type GetWithCacheOptions struct {
 	CheckLastModTime bool
 	// Client is the http.Client instance to use when fetching resources.
 	Client *net_http.Client
+	// Optional user-agent string to include with HTTP requests.
+	UserAgent string
+	// The BlobCache instance used to store and retrieve cached items.
+	BlobCache *blobcache.BlobCache
 }
 
 // GetWithCache attempts to fetch a resource identified by uri from the
@@ -33,19 +37,20 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 	opts := &GetWithCacheOptions{
 		CheckLastModTime: true,
 		Client:           &http_cl,
+		BlobCache:        c,
 	}
 
-	return GetWithCacheAndOptions(ctx, c, uri, opts)
+	return GetWithCacheAndOptions(ctx, opts, uri)
 }
 
 // GetWithCacheAndOptions behaves like GetWithCache but accepts a
 // GetWithCacheOptions struct to control optional behaviour.
-func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri string, opts *GetWithCacheOptions) (io.ReadSeekCloser, error) {
+func GetWithCacheAndOptions(ctx context.Context, opts *GetWithCacheOptions, uri string) (io.ReadSeekCloser, error) {
 
 	logger := slog.Default()
 	logger = logger.With("uri", uri, "check lastmod", opts.CheckLastModTime)
 
-	r, err := c.Get(ctx, uri)
+	r, err := opts.BlobCache.Get(ctx, uri)
 
 	if err != nil && err != blobcache.CacheMiss {
 		logger.Debug("Failed to retrieve from cache", "error", err)
@@ -54,32 +59,32 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 
 	if err != nil && err == blobcache.CacheMiss {
 		logger.Debug("Cache miss, fetch from source")
-		return getWithCache(ctx, c, opts.Client, uri, r)
+		return getWithCache(ctx, opts, uri, r)
 	}
 
-	attrs, err := c.Attributes(ctx, uri)
+	attrs, err := opts.BlobCache.Attributes(ctx, uri)
 
 	if err != nil {
 		logger.Debug("Failed to determine attributes, fetch from source", "error", err)
-		return getWithCache(ctx, c, opts.Client, uri, r)
+		return getWithCache(ctx, opts, uri, r)
 	}
 
 	if opts.CheckLastModTime {
 
 		cache_t := attrs.ModTime
 
-		req, err := net_http.NewRequestWithContext(ctx, net_http.MethodHead, uri, nil)
+		req, err := newRequest(ctx, opts, net_http.MethodHead, uri)
 
 		if err != nil {
 			logger.Debug("Failed to create request, fetch from source", "error", err)
-			return getWithCache(ctx, c, opts.Client, uri, r)
+			return getWithCache(ctx, opts, uri, r)
 		}
 
 		rsp, err := opts.Client.Do(req)
 
 		if err != nil {
 			logger.Debug("Failed to complete request, fetch from source", "error", err)
-			return getWithCache(ctx, c, opts.Client, uri, r)
+			return getWithCache(ctx, opts, uri, r)
 		}
 
 		source_lastmod := rsp.Header.Get("Last-Modified")
@@ -88,12 +93,12 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 
 		if err != nil {
 			logger.Debug("Failed to parse last mod header", "last mod", source_lastmod, "error", err)
-			return getWithCache(ctx, c, opts.Client, uri, r)
+			return getWithCache(ctx, opts, uri, r)
 		}
 
 		if cache_t.Before(source_t) {
 			logger.Debug("Source has been modified, fecth from source", "cache", cache_t, "source", source_t)
-			return getWithCache(ctx, c, opts.Client, uri, r)
+			return getWithCache(ctx, opts, uri, r)
 		}
 
 	}
@@ -102,11 +107,12 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 	return r, nil
 }
 
-func getWithCache(ctx context.Context, c *blobcache.BlobCache, cl *net_http.Client, uri string, r io.ReadSeekCloser) (io.ReadSeekCloser, error) {
+func getWithCache(ctx context.Context, opts *GetWithCacheOptions, uri string, r io.ReadSeekCloser) (io.ReadSeekCloser, error) {
 
-	r2, err := fetchFromSource(ctx, c, cl, uri)
+	r2, err := fetchFromSource(ctx, opts, uri)
 
 	if err != nil {
+
 		logger := slog.Default()
 		logger.Warn("Failed to fetch from source, returning cache", "uri", uri, "error", err)
 
@@ -124,18 +130,19 @@ func getWithCache(ctx context.Context, c *blobcache.BlobCache, cl *net_http.Clie
 // fetchFromSource downloads a resource from uri using an HTTP GET request,
 // stores the response body in the cache, and returns a ReadSeekCloser
 // for the downloaded data.
-func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, cl *net_http.Client, uri string) (io.ReadSeekCloser, error) {
+func fetchFromSource(ctx context.Context, opts *GetWithCacheOptions, uri string) (io.ReadSeekCloser, error) {
 
 	logger := slog.Default()
 	logger = logger.With("uri", uri)
+	logger = logger.With("user agent", opts.UserAgent)
 
-	req, err := net_http.NewRequestWithContext(ctx, net_http.MethodGet, uri, nil)
+	req, err := newRequest(ctx, opts, net_http.MethodGet, uri)
 
 	if err != nil {
 		return nil, fmt.Errorf("Failed to create new HTTP request, %w", err)
 	}
 
-	rsp, err := cl.Do(req)
+	rsp, err := opts.Client.Do(req)
 
 	if err != nil {
 		return nil, fmt.Errorf("Failed to execute HTTP request, %w", err)
@@ -160,7 +167,7 @@ func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, cl *net_http.C
 		return nil, fmt.Errorf("Failed to create new ReadSeekCloser, %w", err)
 	}
 
-	err = c.Set(ctx, uri, rsc)
+	err = opts.BlobCache.Set(ctx, uri, rsc)
 
 	if err != nil {
 		return nil, fmt.Errorf("Failed to set cache item, %w", err)
@@ -174,4 +181,19 @@ func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, cl *net_http.C
 
 	logger.Debug("Return from source")
 	return rsc, nil
+}
+
+func newRequest(ctx context.Context, opts *GetWithCacheOptions, http_method string, uri string) (*net_http.Request, error) {
+
+	req, err := net_http.NewRequestWithContext(ctx, http_method, uri, nil)
+
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create new HTTP request, %w", err)
+	}
+
+	if opts.UserAgent != "" {
+		req.Header.Set("User-Agent", opts.UserAgent)
+	}
+
+	return req, nil
 }
