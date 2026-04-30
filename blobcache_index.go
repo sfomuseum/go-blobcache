@@ -26,7 +26,7 @@ var blobCacheTableSchema string
 // The function receives the context, the key of the removed object,
 // and either its size or modification time depending on the pruning
 // strategy.  It should return true to stop pruning.
-type removeObjectsStopFunc func(context.Context, string, int64) bool
+type removeObjectsStopFunc func(context.Context, string, uint64) bool
 
 // hashKey returns the MD5 digest of the supplied key as a hex string.
 func hashKey(key string) string {
@@ -286,11 +286,11 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 
 	now := time.Now()
 	ts := now.Unix()
-	then := ts - c.max_age
+	then := uint64(ts) - c.max_age
 
 	logger.Debug("Query objects in blobcache index older than", "age", then)
 
-	stopFunc := func(ctx context.Context, obj_key string, obj_modtime int64) bool {
+	stopFunc := func(ctx context.Context, obj_key string, obj_size uint64) bool {
 		return false
 	}
 
@@ -311,7 +311,7 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 
 	logger.Debug("Query size of objects in blobcache index")
 
-	var size int64
+	var size uint64
 
 	row := c.index_db.QueryRowContext(ctx, "SELECT IFNULL(SUM(size), 0) AS size FROM blobcache WHERE bucket = ?", c.bucket_hash)
 	err := row.Scan(&size)
@@ -330,7 +330,7 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 
 		logger.Debug("Cache exceeds max size limits", "size", size, "max size", c.max_size)
 
-		stopFunc := func(ctx context.Context, obj_key string, obj_size int64) bool {
+		stopFunc := func(ctx context.Context, obj_key string, obj_size uint64) bool {
 
 			size -= obj_size
 
@@ -367,7 +367,7 @@ func (c *BlobCache) removeObjects(ctx context.Context, stopFunc removeObjectsSto
 
 	logger := slog.Default()
 
-	objects := make(map[string]int64)
+	objects := make(map[string]uint64)
 
 	rows, err := c.index_db.QueryContext(ctx, q, args...)
 
@@ -381,7 +381,7 @@ func (c *BlobCache) removeObjects(ctx context.Context, stopFunc removeObjectsSto
 	for rows.Next() {
 
 		var key string
-		var sz int64
+		var sz uint64
 
 		err := rows.Scan(&key, &sz)
 
@@ -484,7 +484,7 @@ func (c *BlobCache) walkCache(ctx context.Context, objects_map *sync.Map, size_c
 
 			_, exists := objects_map.LoadAndDelete(obj.Key)
 
-			if now.Unix()-c.max_age > ts {
+			if uint64(now.Unix())-c.max_age > uint64(ts) {
 
 				logger.Debug("Key triggers max age, schedule for removal", "mod time", obj.ModTime)
 

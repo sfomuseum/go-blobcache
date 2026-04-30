@@ -4,9 +4,11 @@ go 1.26.2
 
 require (
 	github.com/aaronland/gocloud v1.1.0
+	github.com/dustin/go-humanize v1.0.1
 	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/sfomuseum/go-database v0.0.18
 	github.com/sfomuseum/go-flags v0.12.1
+	github.com/sfomuseum/iso8601duration v1.1.0
 	github.com/whosonfirst/go-ioutil v1.0.2
 	gocloud.dev v0.45.0
 )
