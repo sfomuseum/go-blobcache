@@ -68,15 +68,17 @@ func RunWithFlagSet(ctx context.Context, fs *flag.FlagSet) error {
 			return err
 		}
 
-	case "prune":
+	case "index":
 
 		err := c.Index(ctx)
-
+		
 		if err != nil {
 			return err
 		}
 
-		err = c.Prune(ctx)
+	case "prune":
+		
+		err := c.Prune(ctx)
 
 		if err != nil {
 			return err
