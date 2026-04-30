@@ -34,7 +34,7 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 
 	opts := &GetWithCacheOptions{
 		CheckLastModTime: true,
-		Client:           &net_http.Client{},
+		Client:           NewClient(),
 		BlobCache:        c,
 	}
 
@@ -189,9 +189,15 @@ func newRequest(ctx context.Context, opts *GetWithCacheOptions, http_method stri
 		return nil, fmt.Errorf("Failed to create new HTTP request, %w", err)
 	}
 
-	if opts.UserAgent != "" {
-		req.Header.Set("User-Agent", opts.UserAgent)
+	if opts.UserAgent == "" {
+
+		err := AssignRandomUserAgent(req)
+
+		if err != nil {
+			slog.Warn("Failed to assign random user agent", "error", err)
+		}
 	}
 
+	// slog.Debug("New request", "uri", uri, "ua", req.Header.Get("User-Agent"))
 	return req, nil
 }
