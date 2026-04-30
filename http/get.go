@@ -14,8 +14,6 @@ import (
 	"github.com/whosonfirst/go-ioutil"
 )
 
-var http_cl = net_http.Client{}
-
 // GetWithCacheOptions specifies optional behaviour for GetWithCache.
 type GetWithCacheOptions struct {
 	// CheckLastModTime indicates whether the function should perform an HTTP HEAD
@@ -36,7 +34,7 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 
 	opts := &GetWithCacheOptions{
 		CheckLastModTime: true,
-		Client:           &http_cl,
+		Client:           &net_http.Client{},
 		BlobCache:        c,
 	}
 
