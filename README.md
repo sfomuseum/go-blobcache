@@ -51,3 +51,13 @@ _Error handling omitted for the sake of brevity._
 $> make cli
 go build -tags= -mod vendor -ldflags="-s -w" -o bin/blobcache cmd/blobcache/main.go
 ```
+
+## Build tags
+
+### no_azure
+
+### no_gcs
+
+### no_local
+
+### no_s3
