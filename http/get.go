@@ -1,3 +1,5 @@
+// Package http provides helpers for downloading resources over HTTP
+// while transparently caching them in a BlobCache.
 package http
 
 import (
@@ -14,10 +16,16 @@ import (
 
 var http_cl = net_http.Client{}
 
+// GetWithCacheOptions specifies optional behaviour for GetWithCache.
 type GetWithCacheOptions struct {
+	// CheckLastModTime indicates whether the function should perform an HTTP HEAD
+	// request to determine if the cached copy is still up‑to‑date.
 	CheckLastModTime bool
 }
 
+// GetWithCache attempts to fetch a resource identified by uri from the
+// supplied BlobCache.  If the resource is not cached or the cached copy
+// is stale, it is fetched from the source and stored in the cache.
 func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.ReadSeekCloser, error) {
 
 	opts := &GetWithCacheOptions{
@@ -27,6 +35,8 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 	return GetWithCacheAndOptions(ctx, c, uri, opts)
 }
 
+// GetWithCacheAndOptions behaves like GetWithCache but accepts a
+// GetWithCacheOptions struct to control optional behaviour.
 func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri string, opts *GetWithCacheOptions) (io.ReadSeekCloser, error) {
 
 	logger := slog.Default()
@@ -108,6 +118,9 @@ func getWithCache(ctx context.Context, c *blobcache.BlobCache, uri string, r io.
 	return r2, nil
 }
 
+// fetchFromSource downloads a resource from uri using an HTTP GET request,
+// stores the response body in the cache, and returns a ReadSeekCloser
+// for the downloaded data.
 func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, uri string) (io.ReadSeekCloser, error) {
 
 	logger := slog.Default()
@@ -116,7 +129,7 @@ func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, uri string) (i
 	req, err := net_http.NewRequestWithContext(ctx, net_http.MethodGet, uri, nil)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to create new HTTP request, %w", err)
 	}
 
 	rsp, err := http_cl.Do(req)

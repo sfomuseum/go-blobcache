@@ -1,3 +1,7 @@
+// Package blobcache provides a simple, SQLite‑backed cache for blob objects.
+// The cache is backed by a gocloud.dev/blob bucket and maintains an index of
+// cached items in a SQLite database.  It exposes helpers for storing,
+// retrieving, and pruning cached objects.
 package blobcache
 
 import (
