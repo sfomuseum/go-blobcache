@@ -36,7 +36,7 @@ func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri str
 
 	if err != nil && err != blobcache.CacheMiss {
 		logger.Debug("Failed to retrieve from cache", "error", err)
-		return nil, err
+		return nil, fmt.Errorf("Failed to retrieve cache item, %w", err)
 	}
 
 	if err != nil && err == blobcache.CacheMiss {
@@ -96,6 +96,12 @@ func getWithCache(ctx context.Context, c *blobcache.BlobCache, uri string, r io.
 	if err != nil {
 		logger := slog.Default()
 		logger.Warn("Failed to fetch from source, returning cache", "uri", uri, "error", err)
+
+		if r == nil {
+			logger.Error("Failed to retrieve from cache AND source")
+			return nil, fmt.Errorf("Failed to retrieve from cache AND source")
+		}
+
 		return r, nil
 	}
 
@@ -116,7 +122,7 @@ func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, uri string) (i
 	rsp, err := http_cl.Do(req)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to execute HTTP request, %w", err)
 	}
 
 	defer rsp.Body.Close()
@@ -128,26 +134,26 @@ func fetchFromSource(ctx context.Context, c *blobcache.BlobCache, uri string) (i
 	body, err := io.ReadAll(rsp.Body)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to read HTTP response, %w", err)
 	}
 
 	br := bytes.NewReader(body)
 	rsc, err := ioutil.NewReadSeekCloser(br)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to create new ReadSeekCloser, %w", err)
 	}
 
 	err = c.Set(ctx, uri, rsc)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to set cache item, %w", err)
 	}
 
 	_, err = rsc.Seek(0, 0)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to rewind ReadSeekCloser, %w", err)
 	}
 
 	logger.Debug("Return from source")
