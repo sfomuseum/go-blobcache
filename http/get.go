@@ -15,7 +15,6 @@ import (
 var http_cl = net_http.Client{}
 
 type GetWithCacheOptions struct {
-	URI              string
 	CheckLastModTime bool
 }
 
@@ -29,8 +28,9 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 }
 
 func GetWithCacheAndOptions(ctx context.Context, c *blobcache.BlobCache, uri string, opts *GetWithCacheOptions) (io.ReadSeekCloser, error) {
+
 	logger := slog.Default()
-	logger = logger.With("uri", uri)
+	logger = logger.With("uri", uri, "check lastmod", opts.CheckLastModTime)
 
 	r, err := c.Get(ctx, uri)
 

@@ -6,3 +6,6 @@ vuln:
 
 cli:
 	go build -tags=$(TAGS) -mod $(GOMOD) -ldflags="$(LDFLAGS)" -o bin/blobcache cmd/blobcache/main.go
+
+cli-local:
+	@make cli TAGS=no_gcs,no_azure,no_s3

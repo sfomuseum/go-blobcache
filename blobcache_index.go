@@ -4,17 +4,53 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-
 	sfom_sql "github.com/sfomuseum/go-database/sql"
 )
 
+// removeObjectsStopFunc is a callback that determines whether
+// pruning should stop after a particular object has been removed.
+// The function receives the context, the key of the removed object,
+// and either its size or modification time depending on the pruning
+// strategy.  It should return true to stop pruning.
+type removeObjectsStopFunc func(context.Context, string, int64) bool
+
+// setupBlobCacheIndex creates or opens the SQLite database that
+// stores the cache index.  If the supplied DSN is ":default:" the
+// function creates a file in the user's cache directory under
+// `blobcache/blobcache.db`.  The function configures the SQLite
+// PRAGMA settings, ensures the `blobcache` table exists, and
+// returns the opened *sql.DB.
 func setupBlobCacheIndex(ctx context.Context, index_dsn string) (*sql.DB, error) {
+
+	if index_dsn == ":default:" {
+
+		cache_dir, err := os.UserCacheDir()
+
+		if err != nil {
+			return nil, fmt.Errorf("Failed to derive cache dir, %w", err)
+		}
+
+		root := filepath.Join(cache_dir, "blobcache")
+
+		err = os.MkdirAll(root, 0750)
+
+		if err != nil {
+			return nil, fmt.Errorf("Failed to create blobcache root, %w", err)
+		}
+
+		db_path := filepath.Join(root, "blobcache.db")
+
+		index_dsn = fmt.Sprintf("%s?cache=shared", db_path)
+		slog.Debug("Result blobcache index DSN", "dsn", index_dsn)
+	}
 
 	index_db, err := sql.Open("sqlite3", index_dsn)
 
@@ -50,18 +86,35 @@ func setupBlobCacheIndex(ctx context.Context, index_dsn string) (*sql.DB, error)
 	return index_db, err
 }
 
+// addToIndex inserts or replaces the record for the supplied key
+// in the cache index.  The size and modification time are stored
+// as integer seconds.
 func (c *BlobCache) addToIndex(ctx context.Context, key string, size int64, modtime int64) error {
+
+	if c.index_db == nil {
+		return nil
+	}
 
 	_, err := c.index_db.ExecContext(ctx, "INSERT OR REPLACE INTO blobcache (key, size, modtime) VALUES(?, ?, ?)", key, size, modtime)
 	return err
 }
 
+// removeFromIndex deletes the record for the supplied key from
+// the cache index.
 func (c *BlobCache) removeFromIndex(ctx context.Context, key string) error {
+
+	if c.index_db == nil {
+		return nil
+	}
 
 	_, err := c.index_db.ExecContext(ctx, "DELETE from blobcache WHERE key = ?", key)
 	return err
 }
 
+// Index synchronises the cache index with the underlying bucket.
+// It walks the bucket, adding new items, and removes any index entries
+// that no longer exist in the bucket.  The function is safe to run
+// concurrently – it uses atomic flags to prevent overlapping runs.
 func (c *BlobCache) Index(ctx context.Context) error {
 
 	if c.bucket == nil {
@@ -85,24 +138,30 @@ func (c *BlobCache) Index(ctx context.Context) error {
 	size := int64(0)
 	count := int64(0)
 
-	li := c.bucket.List(nil)
-	iter, err_fn := li.All(ctx)
-
-	wg := new(sync.WaitGroup)
 	t1 := time.Now()
 
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 
-	t_done := make(chan bool)
+	done_ch := make(chan bool)
+	size_ch := make(chan int64)
+	count_ch := make(chan int64)
+
+	defer func() {
+		done_ch <- true
+	}()
 
 	go func() {
 
 		for {
 			select {
-			case <-t_done:
+			case <-done_ch:
 				logger.Debug("Indexing complete", "count", atomic.LoadInt64(&count), "size", atomic.LoadInt64(&size))
 				return
+			case i := <-size_ch:
+				atomic.AddInt64(&size, i)
+			case i := <-count_ch:
+				atomic.AddInt64(&count, i)
 			case <-t.C:
 				logger.Debug("Indexing in progress", "count", atomic.LoadInt64(&count), "size", atomic.LoadInt64(&size))
 
@@ -154,68 +213,10 @@ func (c *BlobCache) Index(ctx context.Context) error {
 	// Now plough through the cache deleting keys from objects_map as we go.
 	// Anything left over should be removed from the index in the next step
 
-	logger.Debug("Walk cache")
-
-	for obj, _ := range iter {
-
-		if obj.IsDir {
-			continue
-		}
-
-		wg.Go(func() {
-
-			now := time.Now()
-			ts := obj.ModTime.Unix()
-
-			objects_map.Delete(obj.Key)
-
-			if now.Unix()-c.max_age > ts {
-
-				logger.Debug("Key triggers max age, schedule for removal", "key", obj.Key, "mod time", obj.ModTime)
-
-				wg.Go(func() {
-
-					ctx := context.Background()
-					err := c.bucket.Delete(ctx, obj.Key)
-
-					if err != nil {
-						logger.Error("Failed to delete stale object", "key", obj.Key, "error", err)
-						return
-					}
-
-					err = c.removeFromIndex(ctx, obj.Key)
-
-					if err != nil {
-						logger.Error("Failed to delete object from blobcache", "key", obj.Key, "error", err)
-						return
-					}
-				})
-
-				return
-			}
-
-			wg.Go(func(){
-				
-				err := c.addToIndex(ctx, obj.Key, obj.Size, ts)
-				
-				if err != nil {
-					logger.Error("Failed to insert object in to index", "key", obj.Key, "error", err)
-				}
-			})
-			
-			atomic.AddInt64(&size, obj.Size)
-			atomic.AddInt64(&count, 1)
-		})
-	}
-
-	wg.Wait()
-	t_done <- true
-
-	err = err_fn()
+	err = c.walkCache(ctx, objects_map, size_ch, count_ch)
 
 	if err != nil {
-		logger.Error("Bucket iterator returned an error", "error", err)
-		return err
+		logger.Error("Failed to walk cache", "error", err)
 	}
 
 	// Now remove old or errant entries in the database
@@ -241,6 +242,10 @@ func (c *BlobCache) Index(ctx context.Context) error {
 	return nil
 }
 
+// Prune removes cached objects that are older than the configured
+// max‑age or that cause the total size to exceed max‑size.
+// It uses the index to determine which objects to delete and updates
+// the index as it removes entries.
 func (c *BlobCache) Prune(ctx context.Context) error {
 
 	if c.bucket == nil {
@@ -262,6 +267,35 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 	c.pruning.Store(true)
 	defer c.pruning.Store(false)
 
+	// Delete older here...
+
+	now := time.Now()
+	ts := now.Unix()
+	then := ts - c.max_age
+
+	logger.Debug("Query objects in blobcache index older than", "age", then)
+
+	stopFunc := func(ctx context.Context, obj_key string, obj_modtime int64) bool {
+		return false
+	}
+
+	for {
+
+		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE modtime < ?", then)
+
+		if err != nil {
+			logger.Error("Failed to remove objects older than", "age", then, "error", err)
+			return err
+		}
+
+		if count == 0 {
+			logger.Debug("No more records older than")
+			break
+		}
+	}
+
+	logger.Debug("Query size of objects in blobcache index")
+
 	var size int64
 
 	row := c.index_db.QueryRowContext(ctx, "SELECT IFNULL(SUM(size), 0) AS size FROM blobcache")
@@ -277,86 +311,215 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 		return nil
 	}
 
-	logger.Debug("Cache exceeds max size limits", "size", size, "max size", c.max_size)
-
 	for size > c.max_size {
 
-		objects := make(map[string]int64)
+		logger.Debug("Cache exceeds max size limits", "size", size, "max size", c.max_size)
 
-		rows, err := c.index_db.QueryContext(ctx, "SELECT key, size FROM blobcache ORDER BY modtime ASC LIMIT 100")
+		stopFunc := func(ctx context.Context, obj_key string, obj_size int64) bool {
 
-		if err != nil {
-			logger.Error("Failed to select keys for pruning", "error", err)
-			return err
-		}
-
-		defer rows.Close()
-
-		for rows.Next() {
-
-			var key string
-			var sz int64
-
-			err := rows.Scan(&key, &sz)
-
-			if err != nil {
-				logger.Error("Failed to scan key for pruning", "error", err)
-				return err
-			}
-
-			objects[key] = sz
-		}
-
-		err = rows.Close()
-
-		if err != nil {
-			logger.Error("Failed to close rows after pruning", "error", err)
-			return err
-		}
-
-		err = rows.Err()
-
-		if err != nil {
-			logger.Error("Rows reported an error after pruning", "error", err)
-			return err
-		}
-
-		for key, sz := range objects {
-
-			// logger.Debug("Remove key from cache", "key", key)
-
-			exists, err := c.bucket.Exists(ctx, key)
-
-			if err != nil {
-				//
-			}
-
-			if exists {
-
-				err = c.bucket.Delete(ctx, key)
-
-				if err != nil {
-					logger.Error("Failed to delete stale object", "key", key, "error", err)
-				} else {
-					logger.Debug("Key removed from cache", "key", key)
-					size -= sz
-				}
-
-			} else {
-				logger.Debug("Key not found in cache", "key", key)
-			}
-
-			err = c.removeFromIndex(ctx, key)
-
-			if err != nil {
-				logger.Error("Failed to delete stale object from index", "key", key, "error", err)
-			}
+			size -= obj_size
 
 			if size < c.max_size {
-				logger.Debug("Cache now fits size limits", "size", size)
-				break
+				// Stop pruning
+				logger.Debug("Cache no longer exceeds max size limits", "size", size, "max size", c.max_size)
+				return true
 			}
+
+			return false
 		}
+
+		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache ORDER BY modtime ASC LIMIT 100")
+
+		if err != nil {
+			logger.Error("Failed to prune objects", "error", err)
+			return err
+		}
+
+		// This should never happen but computers, amirite?
+		if count == 0 {
+			break
+		}
+	}
+
+	return nil
+}
+
+// removeObjects deletes objects from the cache based on the supplied
+// query.  The stopFunc callback can be used to abort the loop early
+// (for example, when the size limit has been met).  The function
+// returns the number of objects it attempted to delete.
+func (c *BlobCache) removeObjects(ctx context.Context, stopFunc removeObjectsStopFunc, q string, args ...any) (int, error) {
+
+	logger := slog.Default()
+
+	objects := make(map[string]int64)
+
+	rows, err := c.index_db.QueryContext(ctx, q, args...)
+
+	if err != nil {
+		logger.Error("Failed to select keys for pruning", "q", q, "error", err)
+		return 0, err
+	}
+
+	defer rows.Close()
+
+	for rows.Next() {
+
+		var key string
+		var sz int64
+
+		err := rows.Scan(&key, &sz)
+
+		if err != nil {
+			logger.Error("Failed to scan key for pruning", "error", err)
+			return len(objects), err
+		}
+
+		objects[key] = sz
+	}
+
+	err = rows.Close()
+
+	if err != nil {
+		logger.Error("Failed to close rows after pruning", "error", err)
+		return len(objects), err
+	}
+
+	err = rows.Err()
+
+	if err != nil {
+		logger.Error("Rows reported an error after pruning", "error", err)
+		return len(objects), err
+	}
+
+	for key, sz := range objects {
+
+		// logger.Debug("Remove key from cache", "key", key)
+
+		exists, err := c.bucket.Exists(ctx, key)
+
+		if err != nil {
+			logger.Warn("Failed to determine if key exists", "key", key, "error", err)
+			continue
+		}
+
+		if exists {
+
+			err = c.bucket.Delete(ctx, key)
+
+			if err != nil {
+				logger.Error("Failed to delete stale object", "key", key, "error", err)
+			} else {
+				logger.Debug("Key removed from cache", "key", key)
+			}
+
+		} else {
+			logger.Debug("Key not found in cache", "key", key)
+		}
+
+		err = c.removeFromIndex(ctx, key)
+
+		if err != nil {
+			logger.Error("Failed to delete stale object from index", "key", key, "error", err)
+		}
+
+		if stopFunc(ctx, key, sz) {
+			logger.Debug("stopFunc returned true, stopping")
+			break
+		}
+	}
+
+	return len(objects), nil
+}
+
+func (c *BlobCache) walkCache(ctx context.Context, objects_map *sync.Map, size_ch chan int64, count_ch chan int64) error {
+
+	logger := slog.Default()
+	logger.Debug("Walk cache")
+
+	t1 := time.Now()
+
+	defer func() {
+		logger.Debug("Time to walk cache", "time", time.Since(t1))
+	}()
+
+	wg := new(sync.WaitGroup)
+
+	li := c.bucket.List(nil)
+	iter, err_fn := li.All(ctx)
+
+	for obj, _ := range iter {
+
+		if obj.IsDir {
+			continue
+		}
+
+		wg.Go(func() {
+
+			logger := slog.Default()
+			logger = logger.With("key", obj.Key)
+
+			// logger.Debug("Process object")
+
+			now := time.Now()
+			ts := obj.ModTime.Unix()
+
+			// Confirm whether object already in index so we don't have
+			// to add it again below
+
+			_, exists := objects_map.LoadAndDelete(obj.Key)
+
+			if now.Unix()-c.max_age > ts {
+
+				logger.Debug("Key triggers max age, schedule for removal", "mod time", obj.ModTime)
+
+				wg.Go(func() {
+
+					ctx := context.Background()
+					err := c.bucket.Delete(ctx, obj.Key)
+
+					if err != nil {
+						logger.Error("Failed to delete stale object", "error", err)
+						return
+					}
+
+					err = c.removeFromIndex(ctx, obj.Key)
+
+					if err != nil {
+						logger.Error("Failed to delete object from blobcache", "error", err)
+						return
+					}
+				})
+
+				return
+			}
+
+			if !exists {
+
+				// logger.Debug("Add object to index")
+
+				wg.Go(func() {
+
+					err := c.addToIndex(ctx, obj.Key, obj.Size, ts)
+
+					if err != nil {
+						logger.Error("Failed to insert object in to index", "error", err)
+					}
+				})
+			}
+
+			size_ch <- obj.Size
+			count_ch <- int64(1)
+		})
+	}
+
+	wg.Wait()
+
+	err := err_fn()
+
+	if err != nil {
+		logger.Error("Bucket iterator returned an error", "error", err)
+		return err
 	}
 
 	return nil

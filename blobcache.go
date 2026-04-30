@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -18,14 +19,23 @@ import (
 	"gocloud.dev/blob"
 )
 
+// CacheMiss is returned by Get and Attributes when a key does not exist
+// in the cache.
 var CacheMiss = errors.New("Cache miss")
 
+// Kilobyte, Megabyte and Gigabyte are convenience constants for
+// expressing cache size limits.
 const (
 	Kilobyte = 1024
 	Megabyte = 1024 * 1024
 	Gigabyte = 1024 * 1024 * 1024
 )
 
+// BlobCache is the main type exported by this package.  A BlobCache
+// holds a reference to a gocloud blob bucket, a ticker that drives
+// periodic pruning, a channel used to stop the ticker goroutine, and
+// configuration limits.  The cache also keeps a SQLite database that
+// stores the size and last‑access time of each cached item.
 type BlobCache struct {
 	bucket   *blob.Bucket
 	ticker   *time.Ticker
@@ -38,6 +48,14 @@ type BlobCache struct {
 	pruning  *atomic.Bool
 }
 
+// NewBlobCache creates a new BlobCache.  The URI passed in defines the
+// underlying bucket (for example, `file:///tmp/cache`).
+// Query parameters may be supplied to override the defaults:
+//
+//   - `max-age` – maximum age of cached items in seconds (default 7 days)
+//   - `max-size` – maximum total cache size in bytes (default 10 GiB)
+//   - `index-dsn` – SQLite DSN for the cache index. The default is to create a database
+//     file in the user's cache directory under `blobcache/blobcache.db`.
 func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 
 	u, err := url.Parse(uri)
@@ -54,20 +72,34 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 		return nil, err
 	}
 
+	index_dsn := ":default:"
 	max_age := int64(d.Seconds())
 	max_size := int64(10 * Gigabyte)
 
 	if q.Has("max-age") {
-		//
+
+		v, err := strconv.ParseInt(q.Get("max-age"), 10, 64)
+
+		if err != nil {
+			return nil, fmt.Errorf("Failed to parse ?max-age= parameter, %w", err)
+		}
+
+		max_age = v
 		q.Del("max-age")
 	}
 
 	if q.Has("max-size") {
-		//
+
+		v, err := strconv.ParseInt(q.Get("max-size"), 10, 64)
+
+		if err != nil {
+			return nil, fmt.Errorf("Failed to parse ?max-size= parameter, %w", err)
+		}
+
+		max_size = v
+
 		q.Del("max-size")
 	}
-
-	index_dsn := ":memory:?cache=shared&mode=memory"
 
 	if q.Has("index-dsn") {
 		index_dsn = q.Get("index-dsn")
@@ -78,6 +110,7 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 	uri = u.String()
 
 	var b *blob.Bucket
+	var index_db *sql.DB
 
 	switch u.Scheme {
 	case "null":
@@ -99,14 +132,14 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 		if err != nil {
 			return nil, fmt.Errorf("Failed to open cache bucket, %w", err)
 		}
-	}
 
-	slog.Debug("Set up index database", "dsn", index_dsn)
+		slog.Debug("Set up index database", "dsn", index_dsn)
 
-	index_db, err := setupBlobCacheIndex(ctx, index_dsn)
+		index_db, err = setupBlobCacheIndex(ctx, index_dsn)
 
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	indexing := new(atomic.Bool)
@@ -120,9 +153,9 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 
 	c := &BlobCache{
 		bucket:   b,
+		index_db: index_db,
 		max_age:  max_age,
 		max_size: max_size,
-		index_db: index_db,
 		indexing: indexing,
 		indexed:  indexed,
 		pruning:  pruning,
@@ -158,6 +191,8 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 	return c, nil
 }
 
+// Get retrieves the contents of the cache item identified by key.  If
+// the key is not present, CacheMiss is returned.
 func (c *BlobCache) Get(ctx context.Context, key string) (io.ReadSeekCloser, error) {
 
 	if c.bucket == nil {
@@ -179,6 +214,9 @@ func (c *BlobCache) Get(ctx context.Context, key string) (io.ReadSeekCloser, err
 	return c.bucket.NewReader(ctx, path, nil)
 }
 
+// Set writes the data from r into the cache under the given key.
+// The function returns immediately; a background goroutine updates the
+// index database with the size and timestamp of the new entry.
 func (c *BlobCache) Set(ctx context.Context, key string, r io.Reader) error {
 
 	if c.bucket == nil {
@@ -219,6 +257,8 @@ func (c *BlobCache) Set(ctx context.Context, key string, r io.Reader) error {
 	return nil
 }
 
+// Unset removes the cache item identified by key.  The removal is
+// immediate; the index database is updated asynchronously.
 func (c *BlobCache) Unset(ctx context.Context, key string) error {
 
 	if c.bucket == nil {
@@ -244,6 +284,8 @@ func (c *BlobCache) Unset(ctx context.Context, key string) error {
 	return nil
 }
 
+// Close stops the background ticker goroutine and closes the underlying
+// bucket and index database.
 func (c *BlobCache) Close() error {
 
 	if c.ticker != nil {
@@ -255,12 +297,28 @@ func (c *BlobCache) Close() error {
 	}
 
 	if c.bucket != nil {
-		c.bucket.Close()
+		err := c.bucket.Close()
+
+		if err != nil {
+			return fmt.Errorf("Failed to close bucket, %w", err)
+		}
+	}
+
+	if c.index_db != nil {
+
+		err := c.index_db.Close()
+
+		if err != nil {
+			return fmt.Errorf("Failed to close index, %w", err)
+		}
+
 	}
 
 	return nil
 }
 
+// Attributes returns the blob.Attributes for the cached item identified by key.
+// If the key does not exist, CacheMiss is returned.
 func (c *BlobCache) Attributes(ctx context.Context, key string) (*blob.Attributes, error) {
 
 	path := c.derivePathFromKey(key)
@@ -278,6 +336,10 @@ func (c *BlobCache) Attributes(ctx context.Context, key string) (*blob.Attribute
 	return c.bucket.Attributes(ctx, path)
 }
 
+// derivePathFromKey turns a key into a path suitable for storage in the
+// underlying bucket.  Keys that are valid URLs are expanded to include
+// the host component; all other keys are hashed and placed in a
+// directory tree derived from the hash.
 func (c *BlobCache) derivePathFromKey(key string) string {
 
 	path := c.deriveTreeFromKey(key)
@@ -291,6 +353,9 @@ func (c *BlobCache) derivePathFromKey(key string) string {
 	return path
 }
 
+// deriveTreeFromKey creates a deterministic directory tree from a key.
+// The key is first MD5‑hashed; the hash string is split into 6‑byte
+// segments and joined with the OS path separator.
 func (c *BlobCache) deriveTreeFromKey(key string) string {
 
 	input := c.hashKey(key)
@@ -311,6 +376,7 @@ func (c *BlobCache) deriveTreeFromKey(key string) string {
 	return path
 }
 
+// hashKey returns the MD5 digest of the supplied key as a hex string.
 func (c *BlobCache) hashKey(key string) string {
 
 	data := []byte(key)
