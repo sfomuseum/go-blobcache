@@ -16,7 +16,7 @@ import (
 	"os"
 	"log"
 
-	"github.com/aaronland/go-blobcache"
+	"github.com/sfomuseum/go-blobcache"
 )
 
 func main() {
