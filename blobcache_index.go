@@ -284,75 +284,86 @@ func (c *BlobCache) Prune(ctx context.Context) error {
 
 	// Delete older here...
 
-	now := time.Now()
-	ts := now.Unix()
-	then := uint64(ts) - c.max_age
+	switch c.max_age {
+	case 0:
+		logger.Debug("Max age checks disabled")
+	default:
+		now := time.Now()
+		ts := now.Unix()
+		then := uint64(ts) - c.max_age
 
-	logger.Debug("Query objects in blobcache index older than", "age", then)
-
-	stopFunc := func(ctx context.Context, obj_key string, obj_size uint64) bool {
-		return false
-	}
-
-	for {
-
-		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE bucket = ? AND modtime < ?", c.bucket_hash, then)
-
-		if err != nil {
-			logger.Error("Failed to remove objects older than", "age", then, "error", err)
-			return err
-		}
-
-		if count == 0 {
-			logger.Debug("No more records older than")
-			break
-		}
-	}
-
-	logger.Debug("Query size of objects in blobcache index")
-
-	var size uint64
-
-	row := c.index_db.QueryRowContext(ctx, "SELECT IFNULL(SUM(size), 0) AS size FROM blobcache WHERE bucket = ?", c.bucket_hash)
-	err := row.Scan(&size)
-
-	if err != nil {
-		logger.Error("Failed to determine total size of items in index", "error", err)
-		return err
-	}
-
-	if size <= c.max_size {
-		logger.Debug("Cache is still within max size limits", "size", size, "max size", c.max_size)
-		return nil
-	}
-
-	for size > c.max_size {
-
-		logger.Debug("Cache exceeds max size limits", "size", size, "max size", c.max_size)
+		logger.Debug("Query objects in blobcache index older than", "age", then)
 
 		stopFunc := func(ctx context.Context, obj_key string, obj_size uint64) bool {
-
-			size -= obj_size
-
-			if size < c.max_size {
-				// Stop pruning
-				logger.Debug("Cache no longer exceeds max size limits", "size", size, "max size", c.max_size)
-				return true
-			}
-
 			return false
 		}
 
-		count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE bucket = ? ORDER BY accessed ASC, modtime ASC LIMIT 100", c.bucket_hash)
+		for {
+
+			count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE bucket = ? AND modtime < ?", c.bucket_hash, then)
+
+			if err != nil {
+				logger.Error("Failed to remove objects older than", "age", then, "error", err)
+				return err
+			}
+
+			if count == 0 {
+				logger.Debug("No more records older than")
+				break
+			}
+		}
+
+		logger.Debug("Query size of objects in blobcache index")
+	}
+
+	switch c.max_size {
+	case 0:
+		logger.Debug("Max size checks disabled.")
+	default:
+
+		var size uint64
+
+		row := c.index_db.QueryRowContext(ctx, "SELECT IFNULL(SUM(size), 0) AS size FROM blobcache WHERE bucket = ?", c.bucket_hash)
+		err := row.Scan(&size)
 
 		if err != nil {
-			logger.Error("Failed to prune objects", "error", err)
+			logger.Error("Failed to determine total size of items in index", "error", err)
 			return err
 		}
 
-		// This should never happen but computers, amirite?
-		if count == 0 {
-			break
+		if size <= c.max_size {
+			logger.Debug("Cache is still within max size limits", "size", size, "max size", c.max_size)
+			return nil
+		}
+
+		for size > c.max_size {
+
+			logger.Debug("Cache exceeds max size limits", "size", size, "max size", c.max_size)
+
+			stopFunc := func(ctx context.Context, obj_key string, obj_size uint64) bool {
+
+				size -= obj_size
+
+				if size < c.max_size {
+					// Stop pruning
+					logger.Debug("Cache no longer exceeds max size limits", "size", size, "max size", c.max_size)
+					return true
+				}
+
+				return false
+			}
+
+			count, err := c.removeObjects(ctx, stopFunc, "SELECT key, size FROM blobcache WHERE bucket = ? ORDER BY accessed ASC, modtime ASC LIMIT 100", c.bucket_hash)
+
+			if err != nil {
+				logger.Error("Failed to prune objects", "error", err)
+				return err
+			}
+
+			// This should never happen but computers, amirite?
+			if count == 0 {
+				break
+			}
 		}
 	}
 
