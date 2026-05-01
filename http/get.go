@@ -28,6 +28,21 @@ type GetWithCacheOptions struct {
 }
 
 // GetWithCache attempts to fetch a resource identified by uri from the
+// supplied BlobCache returning a []byte array. If the resource is not cached or the
+// cached copy is stale, it is fetched from the source and stored in the cache.
+func GetBytesWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) ([]byte, error) {
+
+	r, err := GetWithCache(ctx, c, uri)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+// GetWithCache attempts to fetch a resource identified by uri from the
 // supplied BlobCache.  If the resource is not cached or the cached copy
 // is stale, it is fetched from the source and stored in the cache.
 func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.ReadSeekCloser, error) {
@@ -39,6 +54,21 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 	}
 
 	return GetWithCacheAndOptions(ctx, opts, uri)
+}
+
+// GetWithCache attempts to fetch a resource identified by uri from the
+// supplied BlobCache return a []byte array. If the resource is not cached or the
+// cached copy is stale, it is fetched from the source and stored in the cache.
+func GetBytesWithCacheAndOptions(ctx context.Context, opts *GetWithCacheOptions, uri string) ([]byte, error) {
+
+	r, err := GetWithCacheAndOptions(ctx, opts, uri)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer r.Close()
+	return io.ReadAll(r)
 }
 
 // GetWithCacheAndOptions behaves like GetWithCache but accepts a
