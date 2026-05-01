@@ -57,8 +57,8 @@ type BlobCache struct {
 // underlying bucket (for example, `file:///tmp/cache`).
 // Query parameters may be supplied to override the defaults:
 //
-//   - `max-age` – maximum age of cached items expressed as an ISO8601 duration string (default "P1W" (7 days))
-//   - `max-size` – maximum total cache size expressed as a string (default "10GB")
+//   - `max-age` – maximum age of cached items expressed as an ISO8601 duration string. If "-" then max age checks are disabled. Default "P1W" (7 days).
+//   - `max-size` – maximum total cache size expressed as a string. If "-" then max size checks are disabled. Default "10GB"
 //   - `index-dsn` – SQLite DSN for the cache index. The default is to create a database
 //     file in the user's cache directory under `blobcache/blobcache.db`.
 func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
@@ -94,20 +94,36 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 
 	// Convert max-age to seconds
 
-	d, err := duration.FromString(str_max_age)
+	var max_age uint64
+	var max_size uint64
 
-	if err != nil {
-		return nil, fmt.Errorf("Failed to parse maximum cache object age value, %w", err)
+	switch str_max_age {
+	case "-":
+		max_age = uint64(0)
+	default:
+		d, err := duration.FromString(str_max_age)
+
+		if err != nil {
+			return nil, fmt.Errorf("Failed to parse maximum cache object age value, %w", err)
+		}
+
+		max_age = uint64(d.ToDuration().Seconds())
 	}
-
-	max_age := uint64(d.ToDuration().Seconds())
 
 	// Convert max-size to bytes
 
-	max_size, err := humanize.ParseBytes(str_max_size)
+	switch str_max_size {
+	case "-":
+		max_size = uint64(0)
+	default:
 
-	if err != nil {
-		return nil, fmt.Errorf("Failed to parse maximum cache size value, %w", err)
+		v, err := humanize.ParseBytes(str_max_size)
+
+		if err != nil {
+			return nil, fmt.Errorf("Failed to parse maximum cache size value, %w", err)
+		}
+
+		max_size = v
 	}
 
 	u.RawQuery = q.Encode()
