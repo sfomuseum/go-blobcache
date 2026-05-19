@@ -1,6 +1,6 @@
 module github.com/sfomuseum/go-blobcache
 
-go 1.26.2
+go 1.26.0
 
 require (
 	github.com/aaronland/gocloud v1.1.0
@@ -11,6 +11,7 @@ require (
 	github.com/sfomuseum/iso8601duration v1.1.0
 	github.com/whosonfirst/go-ioutil v1.0.2
 	gocloud.dev v0.45.0
+	golang.org/x/time v0.15.0
 )
 
 require (
@@ -85,12 +86,11 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/api v0.256.0 // indirect
 	google.golang.org/genproto v0.0.0-20251124214823-79d6a2a48846 // indirect

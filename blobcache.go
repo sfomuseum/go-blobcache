@@ -57,8 +57,8 @@ type BlobCache struct {
 // underlying bucket (for example, `file:///tmp/cache`).
 // Query parameters may be supplied to override the defaults:
 //
-//   - `max-age` – maximum age of cached items expressed as an ISO8601 duration string. If "-" then max age checks are disabled. Default "P1W" (7 days).
-//   - `max-size` – maximum total cache size expressed as a string. If "-" then max size checks are disabled. Default "10GB"
+//   - `max-age` – maximum age of cached items expressed as an ISO8601 duration string. For example "P1W" (1 week). If "-" then max age checks are disabled. Default is "-".).
+//   - `max-size` – maximum total cache size expressed as a string. For example "10GB". If "-" then max size checks are disabled. Default is "-"
 //   - `index-dsn` – SQLite DSN for the cache index. The default is to create a database
 //     file in the user's cache directory under `blobcache/blobcache.db`.
 func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
@@ -73,8 +73,8 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 
 	index_dsn := ":default:"
 
-	str_max_age := "P1W"
-	str_max_size := "10GB"
+	str_max_age := "-"
+	str_max_size := "-"
 
 	if q.Has("max-age") {
 

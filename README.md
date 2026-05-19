@@ -96,8 +96,8 @@ In addition to the query parameters specific to the provider you choose, the fol
 
 | Name | Type | Required | Notes |
 | --- | --- | --- | --- |
-| max-age | string | No | The maximum age of cached items expressed as an ISO8601 duration string. If "-" then max age checks are disabled. xDefault is "P1W" (7 days). |
-| max-size | string | No | The maximum total cache size expressed as a string. If "-" then max size checks are disabled. Default is "10GB". |
+| max-age | string | No | The maximum age of cached items expressed as an ISO8601 duration string. For example "P1W" (1 week). If "-" then max age checks are disabled. Default is "-".. |
+| max-size | string | No | The maximum total cache size expressed as a string. For example "10GB". If "-" then max size checks are disabled. Default is "-". |
 | index-dsn | string | No | A valid SQLite DSN string used to create a local database to track (and remove) cached items. Default is ":default:" which creates a `blobcache/blobcache.db` file in the current user's "cache" directory. |
 
 ## Pruning cached items
