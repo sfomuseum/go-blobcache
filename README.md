@@ -1,6 +1,6 @@
 # go-blobcache
 
-Minimalist and opionated Go package implementing a file-based cache using the [gocloud.dev/blob](https://pkg.go.dev/gocloud.dev/blob) package.
+Minimalist and opionated Go package implementing a "blob"-based cache using the [gocloud.dev/blob](https://pkg.go.dev/gocloud.dev/blob) package.
 
 ## Documentation
 
