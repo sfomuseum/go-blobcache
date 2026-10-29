@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	sfom_sql "github.com/sfomuseum/go-database/sql"
 )

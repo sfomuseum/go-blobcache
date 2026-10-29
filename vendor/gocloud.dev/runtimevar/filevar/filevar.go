@@ -93,14 +93,14 @@ func (o *URLOpener) OpenVariableURL(ctx context.Context, u *url.URL) (*runtimeva
 	q.Del("decoder")
 	decoder, err := runtimevar.DecoderByName(ctx, decoderName, o.Decoder)
 	if err != nil {
-		return nil, fmt.Errorf("open variable %v: invalid decoder: %v", u, err)
+		return nil, fmt.Errorf("open variable %v: invalid decoder: %w", u, err)
 	}
 	opts := o.Options
 	if s := q.Get("wait"); s != "" {
 		q.Del("wait")
 		d, err := time.ParseDuration(s)
 		if err != nil {
-			return nil, fmt.Errorf("open variable %v: invalid wait %q: %v", u, s, err)
+			return nil, fmt.Errorf("open variable %v: invalid wait %q: %w", u, s, err)
 		}
 		opts.WaitDuration = d
 	}
@@ -109,7 +109,9 @@ func (o *URLOpener) OpenVariableURL(ctx context.Context, u *url.URL) (*runtimeva
 		return nil, fmt.Errorf("open variable %v: invalid query parameter %q", u, param)
 	}
 	path := u.Path
-	if os.PathSeparator != '/' {
+	// Hostname == "." means a relative path, so drop the leading "/".
+	// Also drop the leading "/" on Windows.
+	if u.Host == "." || os.PathSeparator != '/' {
 		path = strings.TrimPrefix(path, "/")
 	}
 	return OpenVariable(filepath.FromSlash(path), decoder, &opts)

@@ -49,8 +49,9 @@
 // AZURE_STORAGE_PROTOCOL, AZURE_STORAGE_IS_CDN, and AZURE_STORAGE_IS_LOCAL_EMULATOR
 // can be used to configure how the default URLOpener generates the Azure
 // Service URL via ServiceURLOptions. These can all be configured via URL
-// parameters as well. See ServiceURLOptions and NewDefaultServiceURL
-// for more details.
+// parameters as well. See ServiceURLOptions and NewDefaultServiceURL for more
+// details. When AZURE_STORAGE_SAS_TOKEN is set, bucket URLs cannot change the
+// service endpoint; use the environment variables above instead.
 //
 // To customize the URL opener, or for more details on the URL format,
 // see URLOpener.
@@ -83,6 +84,7 @@
 //   - Reader.BeforeRead: *azblob.DownloadStreamOptions
 //   - Attributes: azblobblob.GetPropertiesResponse
 //   - CopyOptions.BeforeCopy: *azblobblob.StartCopyFromURLOptions
+//   - DeleteOptions.BeforeDelete: *azblobblob.DeleteOptions
 //   - WriterOptions.BeforeWrite: *azblob.UploadStreamOptions
 //   - SignedURLOptions.BeforeSign: *sas.BlobPermissions
 package azureblob
@@ -110,7 +112,6 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/sas"
-	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/google/wire"
 	"gocloud.dev/blob"
 	"gocloud.dev/blob/driver"
@@ -126,6 +127,14 @@ const (
 	defaultUploadBuffers   = 5               // configure the number of rotating buffers that are used when uploading (for degree of parallelism)
 	defaultUploadBlockSize = 8 * 1024 * 1024 // configure the upload buffer size
 )
+
+// ptrVal returns the value pointed to by p, or the zero value if p is nil.
+func ptrVal[T any](p *T) (v T) {
+	if p != nil {
+		v = *p
+	}
+	return
+}
 
 func init() {
 	blob.DefaultURLMux().RegisterBucket(Scheme, new(lazyOpener))
@@ -312,7 +321,42 @@ func (o *lazyOpener) OpenBucketURL(ctx context.Context, u *url.URL) (*blob.Bucke
 			ServiceURLOptions: *opts,
 		}
 	})
+	// The SAS token is part of the service URL, so URL parameters must not send
+	// it to another origin.
+	if o.opener.ServiceURLOptions.SASToken != "" {
+		defaultURL, err := NewServiceURL(&o.opener.ServiceURLOptions)
+		if err != nil {
+			return nil, err
+		}
+		opts, err := o.opener.ServiceURLOptions.withOverrides(u.Query())
+		if err != nil {
+			return nil, err
+		}
+		overriddenURL, err := NewServiceURL(opts)
+		if err != nil {
+			return nil, err
+		}
+		same, err := sameServiceOrigin(defaultURL, overriddenURL)
+		if err != nil {
+			return nil, err
+		}
+		if !same {
+			return nil, errors.New("azureblob: bucket URL cannot change the service endpoint when AZURE_STORAGE_SAS_TOKEN is set")
+		}
+	}
 	return o.opener.OpenBucketURL(ctx, u)
+}
+
+func sameServiceOrigin(a, b ServiceURL) (bool, error) {
+	aURL, err := url.Parse(string(a))
+	if err != nil {
+		return false, err
+	}
+	bURL, err := url.Parse(string(b))
+	if err != nil {
+		return false, err
+	}
+	return strings.EqualFold(aURL.Scheme, bURL.Scheme) && strings.EqualFold(aURL.Host, bURL.Host), nil
 }
 
 type credTypeEnumT int
@@ -375,13 +419,13 @@ func (i *credInfoT) NewClient(svcURL ServiceURL, containerName ContainerName) (*
 	case credTypeDefault:
 		cred, err := azidentity.NewDefaultAzureCredential(nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed azidentity.NewDefaultAzureCredential: %v", err)
+			return nil, fmt.Errorf("failed azidentity.NewDefaultAzureCredential: %w", err)
 		}
 		return container.NewClient(containerURL, cred, azClientOpts)
 	case credTypeSharedKey:
 		sharedKeyCred, err := azblob.NewSharedKeyCredential(i.AccountName, i.AccountKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed azblob.NewSharedKeyCredential: %v", err)
+			return nil, fmt.Errorf("failed azblob.NewSharedKeyCredential: %w", err)
 		}
 		return container.NewClientWithSharedKeyCredential(containerURL, sharedKeyCred, azClientOpts)
 	case credTypeSASViaNone:
@@ -527,10 +571,23 @@ func (b *bucket) Copy(ctx context.Context, dstKey, srcKey string, opts *driver.C
 }
 
 // Delete implements driver.Delete.
-func (b *bucket) Delete(ctx context.Context, key string) error {
+func (b *bucket) Delete(ctx context.Context, key string, opts *driver.DeleteOptions) error {
 	key = escapeKey(key, false)
 	blobClient := b.client.NewBlobClient(key)
-	_, err := blobClient.Delete(ctx, nil)
+	azOpts := &azblobblob.DeleteOptions{}
+	if opts.BeforeDelete != nil {
+		asFunc := func(i any) bool {
+			if p, ok := i.(**azblobblob.DeleteOptions); ok {
+				*p = azOpts
+				return true
+			}
+			return false
+		}
+		if err := opts.BeforeDelete(asFunc); err != nil {
+			return err
+		}
+	}
+	_, err := blobClient.Delete(ctx, azOpts)
 	return err
 }
 
@@ -590,8 +647,8 @@ func (b *bucket) NewRangeReader(ctx context.Context, key string, offset, length 
 		return nil, err
 	}
 	attrs := driver.ReaderAttributes{
-		ContentType: to.String(blobDownloadResponse.ContentType),
-		Size:        getSize(blobDownloadResponse.ContentLength, to.String(blobDownloadResponse.ContentRange)),
+		ContentType: ptrVal(blobDownloadResponse.ContentType),
+		Size:        getSize(blobDownloadResponse.ContentLength, ptrVal(blobDownloadResponse.ContentRange)),
 		ModTime:     *blobDownloadResponse.LastModified,
 	}
 	var body io.ReadCloser
@@ -700,12 +757,12 @@ func (b *bucket) Attributes(ctx context.Context, key string) (*driver.Attributes
 		eTag = string(*blobPropertiesResponse.ETag)
 	}
 	return &driver.Attributes{
-		CacheControl:       to.String(blobPropertiesResponse.CacheControl),
-		ContentDisposition: to.String(blobPropertiesResponse.ContentDisposition),
-		ContentEncoding:    to.String(blobPropertiesResponse.ContentEncoding),
-		ContentLanguage:    to.String(blobPropertiesResponse.ContentLanguage),
-		ContentType:        to.String(blobPropertiesResponse.ContentType),
-		Size:               to.Int64(blobPropertiesResponse.ContentLength),
+		CacheControl:       ptrVal(blobPropertiesResponse.CacheControl),
+		ContentDisposition: ptrVal(blobPropertiesResponse.ContentDisposition),
+		ContentEncoding:    ptrVal(blobPropertiesResponse.ContentEncoding),
+		ContentLanguage:    ptrVal(blobPropertiesResponse.ContentLanguage),
+		ContentType:        ptrVal(blobPropertiesResponse.ContentType),
+		Size:               ptrVal(blobPropertiesResponse.ContentLength),
 		CreateTime:         *blobPropertiesResponse.CreationTime,
 		ModTime:            *blobPropertiesResponse.LastModified,
 		MD5:                blobPropertiesResponse.ContentMD5,
@@ -765,7 +822,7 @@ func (b *bucket) ListPaged(ctx context.Context, opts *driver.ListOptions) (*driv
 	segment := resp.ListBlobsHierarchySegmentResponse.Segment
 	for _, blobPrefix := range segment.BlobPrefixes {
 		page.Objects = append(page.Objects, &driver.ListObject{
-			Key:   unescapeKey(to.String(blobPrefix.Name)),
+			Key:   unescapeKey(ptrVal(blobPrefix.Name)),
 			Size:  0,
 			IsDir: true,
 			AsFunc: func(i any) bool {
@@ -779,7 +836,7 @@ func (b *bucket) ListPaged(ctx context.Context, opts *driver.ListOptions) (*driv
 	}
 	for _, blobInfo := range segment.BlobItems {
 		page.Objects = append(page.Objects, &driver.ListObject{
-			Key:     unescapeKey(to.String(blobInfo.Name)),
+			Key:     unescapeKey(ptrVal(blobInfo.Name)),
 			ModTime: *blobInfo.Properties.LastModified,
 			Size:    *blobInfo.Properties.ContentLength,
 			MD5:     blobInfo.Properties.ContentMD5,
@@ -1011,10 +1068,14 @@ func (w *writer) open(r io.Reader, closePipeOnError bool) {
 // Close completes the writer and closes it. Any error occurring during write will
 // be returned. If a writer is closed before any Write is called, Close will
 // create an empty file at the given key.
-func (w *writer) Close() error {
+func (w *writer) Close() (err error) {
 	if !w.upload {
 		if w.pr != nil {
-			defer w.pr.Close()
+			defer func() {
+				if e := w.pr.Close(); e != nil && err == nil {
+					err = e
+				}
+			}()
 		}
 		if w.pw == nil {
 			// We never got any bytes written. We'll write an http.NoBody.
