@@ -65,7 +65,7 @@ func setupBlobCacheIndex(ctx context.Context, index_dsn string) (*sql.DB, error)
 		slog.Debug("Result blobcache index DSN", "dsn", index_dsn)
 	}
 
-	index_db, err := sql.Open("sqlite3", index_dsn)
+	index_db, err := sql.Open("sqlite", index_dsn)
 
 	if err != nil {
 		return nil, fmt.Errorf("Failed to instantiate index database, %w", err)
