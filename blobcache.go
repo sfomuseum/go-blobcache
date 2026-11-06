@@ -134,6 +134,22 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 	var bucket_hash string
 
 	switch u.Scheme {
+	case "cwd":
+
+		cwd, err := os.Getwd()
+
+		if err != nil {
+			return nil, fmt.Errorf("Failed to derive current working directory, %w", err)
+		}
+
+		u.Scheme = "file"
+		u.Path = filepath.Join(cwd, u.Path)
+		uri = u.String()
+
+		slog.Debug("Resolve cwd URI to file URI", "uri", uri)
+	}
+
+	switch u.Scheme {
 	case "null":
 		//
 	default:
@@ -145,6 +161,27 @@ func NewBlobCache(ctx context.Context, uri string) (*BlobCache, error) {
 
 			if err != nil {
 				return nil, fmt.Errorf("Failed to make cache root, %w", err)
+			}
+
+			info, err := os.Stat(u.Path)
+
+			if err != nil {
+				return nil, fmt.Errorf("Failed to stat cache root, %w", err)
+			}
+
+			switch info.Mode() {
+			case os.ModeSymlink:
+
+				path, err := filepath.EvalSymlinks(u.Path)
+
+				if err != nil {
+					return nil, fmt.Errorf("Failed to evaluate cache root symlink, %w", err)
+				}
+
+				slog.Debug("Resolve cache root symlink", "original", u.Path, "resolved", path)
+
+				u.Path = path
+				uri = u.String()
 			}
 		}
 
