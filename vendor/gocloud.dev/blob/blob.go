@@ -723,11 +723,19 @@ type Bucket struct {
 	// from the io/fs package.
 	ioFSCallback func() (context.Context, *ReaderOptions)
 
-	// mu protects the closed variable.
+	// mu protects closed, defaultReaderOptions, and defaultWriterOptions.
 	// Read locks are kept to allow holding a read lock for long-running calls,
 	// and thereby prevent closing until a call finishes.
 	mu     sync.RWMutex
 	closed bool
+	// defaultReaderOptions, if non-nil, is used in place of an empty
+	// ReaderOptions when a read method is called with nil opts. Set via
+	// SetDefaultReaderOptions.
+	defaultReaderOptions *ReaderOptions
+	// defaultWriterOptions, if non-nil, is used in place of an empty
+	// WriterOptions when a rite method is called with nil opts. Set via
+	// SetDefaultWriterOptions.
+	defaultWriterOptions *WriterOptions
 }
 
 const pkgName = "gocloud.dev/blob"
@@ -799,12 +807,72 @@ func (b *Bucket) ReadAll(ctx context.Context, key string) (_ []byte, err error) 
 	return io.ReadAll(r)
 }
 
+// SetDefaultReaderOptions sets default ReaderOptions used by NewReader,
+// NewRangeReader, and Download when they are called with a nil opts. A copy of
+// opts is stored, and a copy is substituted for a nil opts on each call.
+//
+// Only performance-related fields may be defaulted. Setting any other field
+// (currently BeforeRead) returns an error, since those are per-call concerns.
+//
+// It is intended to be called once after opening a Bucket, before concurrent
+// use, but it is safe to call concurrently.
+func (b *Bucket) SetDefaultReaderOptions(opts ReaderOptions) error {
+	if opts.BeforeRead != nil {
+		return gcerr.Newf(gcerr.InvalidArgument, nil, "blob: SetDefaultReaderOptions does not allow setting BeforeRead")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// opts is a value parameter, so it is already a copy owned by this call.
+	b.defaultReaderOptions = &opts
+	return nil
+}
+
+// readerOptionsOrDefault returns opts if it is non-nil, otherwise a copy of the
+// bucket's default ReaderOptions (or an empty one if none is set). Callers must
+// hold b.mu (read or write).
+func (b *Bucket) readerOptionsOrDefault(opts *ReaderOptions) *ReaderOptions {
+	if opts != nil {
+		return opts
+	}
+	if b.defaultReaderOptions != nil {
+		cp := *b.defaultReaderOptions
+		return &cp
+	}
+	return &ReaderOptions{}
+}
+
 // Download writes the content of a blob into an io.Writer w.
+//
+// If w is an io.WriterAt and the driver implements driver.DownloaderAt, the
+// download may be performed with concurrent ranged reads directly into w.
 func (b *Bucket) Download(ctx context.Context, key string, w io.Writer, opts *ReaderOptions) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if b.closed {
 		return errClosed
+	}
+	opts = b.readerOptionsOrDefault(opts)
+	// If the caller opted in to parallel downloads, the destination supports
+	// random-access writes, and the driver can download directly into an
+	// io.WriterAt, use that and skip opening a Reader entirely. This avoids the
+	// eager read NewReader would otherwise issue and then discard.
+	if opts.AllowParallelDownload {
+		if wa, ok := w.(io.WriterAt); ok {
+			if d, ok := b.b.(driver.DownloaderAt); ok {
+				if !utf8.ValidString(key) {
+					return gcerr.Newf(gcerr.InvalidArgument, nil, "blob: Download key must be a valid UTF-8 string: %q", key)
+				}
+				dopts := &driver.ReaderOptions{
+					BeforeRead:     opts.BeforeRead,
+					BufferSize:     opts.BufferSize,
+					MaxConcurrency: opts.MaxConcurrency,
+				}
+				ctx, span := b.tracer.Start(ctx, "Download")
+				err := wrapError(b.b, d.DownloadAt(ctx, key, wa, dopts), key)
+				b.tracer.End(ctx, span, err)
+				return err
+			}
+		}
 	}
 	r, err := b.NewReader(ctx, key, opts)
 	if err != nil {
@@ -1040,9 +1108,7 @@ func (b *Bucket) newRangeReader(ctx context.Context, key string, offset, length 
 	if !utf8.ValidString(key) {
 		return nil, gcerr.Newf(gcerr.InvalidArgument, nil, "blob: NewRangeReader key must be a valid UTF-8 string: %q", key)
 	}
-	if opts == nil {
-		opts = &ReaderOptions{}
-	}
+	opts = b.readerOptionsOrDefault(opts)
 	dopts := &driver.ReaderOptions{
 		BeforeRead: opts.BeforeRead,
 	}
@@ -1085,6 +1151,43 @@ func (b *Bucket) newRangeReader(ctx context.Context, key string, offset, length 
 	return r, nil
 }
 
+// SetDefaultWriterOptions sets default WriterOptions used by Write function
+// when they are called with a nil opts. A copy of opts is stored, and a copy is substituted
+// for a nil opts on each call.
+//
+// Not all fields may be defaulted; currently setting ContentMD5 or BeforeWrite
+// returns an error, since those are per-call concerns.
+//
+// It is intended to be called once after opening a Bucket, before concurrent
+// use, but it is safe to call concurrently.
+func (b *Bucket) SetDefaultWriterOptions(opts WriterOptions) error {
+	if opts.ContentMD5 != nil {
+		return gcerr.Newf(gcerr.InvalidArgument, nil, "blob: SetDefaultWriterOptions does not allow setting ContentMD5")
+	}
+	if opts.BeforeWrite != nil {
+		return gcerr.Newf(gcerr.InvalidArgument, nil, "blob: SetDefaultWriterOptions does not allow setting BeforeWrite")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// opts is a value parameter, so it is already a copy owned by this call.
+	b.defaultWriterOptions = &opts
+	return nil
+}
+
+// writerOptionsOrDefault returns opts if it is non-nil, otherwise a copy of the
+// bucket's default WriterOptions (or an empty one if none is set). Callers must
+// hold b.mu (read or write).
+func (b *Bucket) writerOptionsOrDefault(opts *WriterOptions) *WriterOptions {
+	if opts != nil {
+		return opts
+	}
+	if b.defaultWriterOptions != nil {
+		cp := *b.defaultWriterOptions
+		return &cp
+	}
+	return &WriterOptions{}
+}
+
 // WriteAll is a shortcut for creating a Writer via NewWriter and writing p.
 //
 // If opts.ContentMD5 is not set, WriteAll will compute the MD5 of p and use it
@@ -1092,15 +1195,13 @@ func (b *Bucket) newRangeReader(ctx context.Context, key string, offset, length 
 //
 // Using Upload may be more efficient.
 func (b *Bucket) WriteAll(ctx context.Context, key string, p []byte, opts *WriterOptions) (err error) {
-	realOpts := new(WriterOptions)
-	if opts != nil {
-		*realOpts = *opts
-	}
-	if len(realOpts.ContentMD5) == 0 {
+	opts = b.writerOptionsOrDefault(opts)
+	optsToUse := *opts
+	if len(optsToUse.ContentMD5) == 0 {
 		sum := md5.Sum(p)
-		realOpts.ContentMD5 = sum[:]
+		optsToUse.ContentMD5 = sum[:]
 	}
-	w, err := b.NewWriter(ctx, key, realOpts)
+	w, err := b.NewWriter(ctx, key, &optsToUse)
 	if err != nil {
 		return err
 	}
@@ -1144,9 +1245,7 @@ func (b *Bucket) NewWriter(ctx context.Context, key string, opts *WriterOptions)
 	if !utf8.ValidString(key) {
 		return nil, gcerr.Newf(gcerr.InvalidArgument, nil, "blob: NewWriter key must be a valid UTF-8 string: %q", key)
 	}
-	if opts == nil {
-		opts = &WriterOptions{}
-	}
+	opts = b.writerOptionsOrDefault(opts)
 	dopts := &driver.WriterOptions{
 		CacheControl:                opts.CacheControl,
 		ContentDisposition:          opts.ContentDisposition,
@@ -1431,6 +1530,25 @@ type ReaderOptions struct {
 	// asFunc converts its argument to driver-specific types.
 	// See https://gocloud.dev/concepts/as/ for background information.
 	BeforeRead func(asFunc func(any) bool) error
+
+	// AllowParallelDownload opts in to parallel downloads in Download. When it
+	// is true, the destination is an io.WriterAt, and the driver supports it,
+	// Download fetches the blob with concurrent ranged requests instead of a
+	// single stream. It is off by default because parallel downloads are not
+	// always faster: some S3-compatible backends are slower with concurrent
+	// ranges, and splitting into N requests increases request count and skips
+	// the whole-object checksum validation a single stream performs.
+	AllowParallelDownload bool
+
+	// BufferSize changes the default size in bytes of the chunks that a
+	// parallel download fetches per request; larger blobs are split into more
+	// requests. It is only used when AllowParallelDownload enables a parallel
+	// download, and may be ignored by some drivers.
+	BufferSize int
+
+	// MaxConcurrency changes the default number of parts fetched concurrently
+	// by a parallel download. It has the same applicability as BufferSize.
+	MaxConcurrency int
 }
 
 // WriterOptions sets options for NewWriter.
