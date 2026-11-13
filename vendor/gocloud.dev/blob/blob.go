@@ -598,19 +598,26 @@ func (i *ListIterator) Next(ctx context.Context) (*ListObject, error) {
 		// We need to load the next page.
 		i.opts.PageToken = i.page.NextPageToken
 	}
+	if err := i.loadPage(ctx); err != nil {
+		return nil, err
+	}
+	return i.Next(ctx)
+}
+
+// loadPage loads the next page of results while holding b.mu.
+func (i *ListIterator) loadPage(ctx context.Context) error {
 	i.b.mu.RLock()
 	defer i.b.mu.RUnlock()
 	if i.b.closed {
-		return nil, errClosed
+		return errClosed
 	}
-	// Loading a new page.
 	p, err := i.b.b.ListPaged(ctx, i.opts)
 	if err != nil {
-		return nil, wrapError(i.b.b, err, "")
+		return wrapError(i.b.b, err, "")
 	}
 	i.page = p
 	i.nextIdx = 0
-	return i.Next(ctx)
+	return nil
 }
 
 type errorState struct {
@@ -799,7 +806,7 @@ func (b *Bucket) ReadAll(ctx context.Context, key string) (_ []byte, err error) 
 	if b.closed {
 		return nil, errClosed
 	}
-	r, err := b.NewReader(ctx, key, nil)
+	r, err := b.newRangeReader(ctx, key, 0, -1, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -874,7 +881,7 @@ func (b *Bucket) Download(ctx context.Context, key string, w io.Writer, opts *Re
 			}
 		}
 	}
-	r, err := b.NewReader(ctx, key, opts)
+	r, err := b.newRangeReader(ctx, key, 0, -1, opts)
 	if err != nil {
 		return err
 	}
@@ -1073,6 +1080,8 @@ func (b *Bucket) Attributes(ctx context.Context, key string) (_ *Attributes, err
 
 // NewReader is a shortcut for NewRangeReader with offset=0 and length=-1.
 func (b *Bucket) NewReader(ctx context.Context, key string, opts *ReaderOptions) (*Reader, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	return b.newRangeReader(ctx, key, 0, -1, opts)
 }
 
@@ -1093,12 +1102,14 @@ func (b *Bucket) NewReader(ctx context.Context, key string, opts *ReaderOptions)
 //
 // The caller must call Close on the returned Reader when done reading.
 func (b *Bucket) NewRangeReader(ctx context.Context, key string, offset, length int64, opts *ReaderOptions) (_ *Reader, err error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	return b.newRangeReader(ctx, key, offset, length, opts)
 }
 
+// newRangeReader implements NewRangeReader. Callers must hold b.mu (read or
+// write); sync.RWMutex read locks must not be acquired recursively.
 func (b *Bucket) newRangeReader(ctx context.Context, key string, offset, length int64, opts *ReaderOptions) (_ *Reader, err error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
 	if b.closed {
 		return nil, errClosed
 	}
@@ -1195,7 +1206,9 @@ func (b *Bucket) writerOptionsOrDefault(opts *WriterOptions) *WriterOptions {
 //
 // Using Upload may be more efficient.
 func (b *Bucket) WriteAll(ctx context.Context, key string, p []byte, opts *WriterOptions) (err error) {
+	b.mu.RLock()
 	opts = b.writerOptionsOrDefault(opts)
+	b.mu.RUnlock()
 	optsToUse := *opts
 	if len(optsToUse.ContentMD5) == 0 {
 		sum := md5.Sum(p)
@@ -1245,6 +1258,8 @@ func (b *Bucket) NewWriter(ctx context.Context, key string, opts *WriterOptions)
 	if !utf8.ValidString(key) {
 		return nil, gcerr.Newf(gcerr.InvalidArgument, nil, "blob: NewWriter key must be a valid UTF-8 string: %q", key)
 	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	opts = b.writerOptionsOrDefault(opts)
 	dopts := &driver.WriterOptions{
 		CacheControl:                opts.CacheControl,
@@ -1281,8 +1296,6 @@ func (b *Bucket) NewWriter(ctx context.Context, key string, opts *WriterOptions)
 		}
 		dopts.Metadata = md
 	}
-	b.mu.RLock()
-	defer b.mu.RUnlock()
 	if b.closed {
 		return nil, errClosed
 	}

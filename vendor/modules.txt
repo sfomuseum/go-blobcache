@@ -145,7 +145,7 @@ github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapp
 # github.com/aaronland/go-aws/v3 v3.7.3
 ## explicit; go 1.26.5
 github.com/aaronland/go-aws/v3/auth
-# github.com/aaronland/gocloud v1.3.5
+# github.com/aaronland/gocloud v1.3.6
 ## explicit; go 1.27.4
 github.com/aaronland/gocloud/blob/bucket
 github.com/aaronland/gocloud/blob/s3
@@ -634,7 +634,7 @@ go.opentelemetry.io/otel/trace
 go.opentelemetry.io/otel/trace/embedded
 go.opentelemetry.io/otel/trace/internal/telemetry
 go.opentelemetry.io/otel/trace/noop
-# gocloud.dev v0.48.0
+# gocloud.dev v0.49.0
 ## explicit; go 1.26.0
 gocloud.dev/aws
 gocloud.dev/blob

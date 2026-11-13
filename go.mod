@@ -3,13 +3,13 @@ module github.com/sfomuseum/go-blobcache
 go 1.27.4
 
 require (
-	github.com/aaronland/gocloud v1.3.5
+	github.com/aaronland/gocloud v1.3.6
 	github.com/dustin/go-humanize v1.1.0
 	github.com/sfomuseum/go-database v0.0.22
 	github.com/sfomuseum/go-flags v0.12.1
 	github.com/sfomuseum/iso8601duration v1.1.0
 	github.com/whosonfirst/go-ioutil v1.0.2
-	gocloud.dev v0.48.0
+	gocloud.dev v0.49.0
 	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.62.0
 )
