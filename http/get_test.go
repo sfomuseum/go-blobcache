@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/sfomuseum/go-blobcache"
@@ -11,6 +12,7 @@ import (
 func TestGetWithCache(t *testing.T) {
 
 	ctx := context.Background()
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	c, err := blobcache.NewBlobCache(ctx, "mem://?max-size=1M&index-dsn=:memory:")
 
