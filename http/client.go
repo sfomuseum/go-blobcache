@@ -3,7 +3,17 @@ package http
 import (
 	net_http "net/http"
 	"time"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
+
+func NewRetryableClient() *retryablehttp.Client {
+
+	cl := retryablehttp.NewClient()
+	cl.HTTPClient = NewClient()
+
+	return cl
+}
 
 // NewClient returns a new HTTP client configured with a default
 // request‑throttling limit: a maximum of 100 requests are allowed
