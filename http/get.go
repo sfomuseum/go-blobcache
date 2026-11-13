@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	net_http "net/http"
 
+	"github.com/hashicorp/go-retryablehttp"
 	"github.com/sfomuseum/go-blobcache"
 	"github.com/whosonfirst/go-ioutil"
 )
@@ -20,7 +21,8 @@ type GetWithCacheOptions struct {
 	// request to determine if the cached copy is still up‑to‑date.
 	CheckLastModTime bool
 	// Client is the http.Client instance to use when fetching resources.
-	Client *net_http.Client
+	//Client *net_http.Client
+	Client *retryablehttp.Client
 	// Optional user-agent string to include with HTTP requests.
 	UserAgent string
 	// The BlobCache instance used to store and retrieve cached items.
@@ -49,7 +51,7 @@ func GetWithCache(ctx context.Context, c *blobcache.BlobCache, uri string) (io.R
 
 	opts := &GetWithCacheOptions{
 		CheckLastModTime: true,
-		Client:           NewClient(),
+		Client:           NewRetryableClient(),
 		BlobCache:        c,
 	}
 
@@ -211,7 +213,7 @@ func fetchFromSource(ctx context.Context, opts *GetWithCacheOptions, uri string)
 	return rsc, nil
 }
 
-func newRequest(ctx context.Context, opts *GetWithCacheOptions, http_method string, uri string) (*net_http.Request, error) {
+func newRequest(ctx context.Context, opts *GetWithCacheOptions, http_method string, uri string) (*retryablehttp.Request, error) {
 
 	req, err := net_http.NewRequestWithContext(ctx, http_method, uri, nil)
 
@@ -229,5 +231,7 @@ func newRequest(ctx context.Context, opts *GetWithCacheOptions, http_method stri
 	}
 
 	// slog.Debug("New request", "uri", uri, "ua", req.Header.Get("User-Agent"))
-	return req, nil
+	//return req, nil
+
+	return retryablehttp.FromRequest(req)
 }

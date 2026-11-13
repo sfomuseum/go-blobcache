@@ -5,6 +5,7 @@ go 1.27.4
 require (
 	github.com/aaronland/gocloud v1.3.6
 	github.com/dustin/go-humanize v1.1.0
+	github.com/hashicorp/go-retryablehttp v0.7.8
 	github.com/sfomuseum/go-database v0.0.22
 	github.com/sfomuseum/go-flags v0.12.1
 	github.com/sfomuseum/iso8601duration v1.1.0
@@ -72,6 +73,7 @@ require (
 	github.com/google/wire v0.7.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.24 // indirect
 	github.com/googleapis/gax-go/v2 v2.27.0 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
