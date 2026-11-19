@@ -43,6 +43,18 @@ func NewRetryableClient() *retryablehttp.Client {
 	cl := retryablehttp.NewClient()
 	cl.HTTPClient = NewClient()
 	cl.Logger = NewRetryableLogger()
+	cl.RetryMax = 4
+	cl.RetryWaitMax = 3 * time.Second
+
+	cl.ResponseLogHook = func(l retryablehttp.Logger, rsp *net_http.Response) {
+		slog.Debug("Retry response hook", "url", rsp.Request.URL.String(), "response", rsp.Status)
+	}
+
+	cl.ErrorHandler = func(rsp *net_http.Response, err error, tries int) (*net_http.Response, error) {
+		slog.Error("Retry error", "url", rsp.Request.URL.String(), "tries", tries, "error", err)
+		rsp.Request.Body.Close()
+		return rsp, err
+	}
 
 	return cl
 }
